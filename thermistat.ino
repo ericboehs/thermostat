@@ -2,16 +2,19 @@
 #include "Thermistor.h"
 #include "Soda.h"
 
+#define OFF 0
+#define COOL 1
+#define HEAT 2
+
 // TODO: Use EEPROM.put/get for targetTemp
 
 Soda Soda;
 
 int thermPin = A4; // Analog pin the thermistor is connected to
-int thermRes = 4700; // Voltage divider resistor value
+int thermRes = 4000; // Voltage divider resistor value
 
 // Configure the Thermistor class
 Thermistor Thermistor(thermPin, thermRes);
-
 
 // Inputs
 int fanSwitch = D1;
@@ -24,18 +27,20 @@ int coolRelay = A1;
 int heatRelay = A7;
 
 // States
-int upButtonState = 0;
-int downButtonState = 0;
 int targetTempLastChanged = 0;
 int ledBrightnessDirection = 1;
 int ledBrightness = 0;
 
 // Exposed variables
 bool fanState = false;
+bool heatState = false;
 bool coolState = false;
+int mode = COOL; // OFF, COOL, HEAT
+int heatLastOn = 0;
 int coolLastOn = 0;
 int temperature = 0;
 int targetTemperature = 72;
+double preciseTemperature = 0.0;
 String info;
 
 // Timers
@@ -44,6 +49,7 @@ Timer fanSwitchReadTimer(10, fanSwitchRead);
 Timer upButtonReadTimer(10, upButtonRead);
 Timer downButtonReadTimer(10, downButtonRead);
 Timer toggleCoolTimer(1000, toggleCool);
+Timer toggleHeatTimer(1000, toggleHeat);
 Timer pulsateLedTimer(25, pulsateLed);
 Timer updateInfoTimer(100, updateInfo);
 
@@ -57,11 +63,15 @@ void setup() {
   pinMode(heatRelay, OUTPUT);
 
   Particle.variable("info", &info, STRING);
+  Particle.variable("mode", mode);
   Particle.variable("fanState", fanState);
+  Particle.variable("heatLastOn", heatLastOn);
+  Particle.variable("heatState", heatState);
   Particle.variable("coolLastOn", coolLastOn);
   Particle.variable("coolState", coolState);
   Particle.variable("temperature", temperature);
   Particle.variable("targetTemp", targetTemperature);
+  Particle.function("setMode", setMode);
   Particle.function("targetTemp", setTargetTemp);
 
   //        a   b   c   d   e   f   g   .
@@ -73,10 +83,12 @@ void setup() {
   upButtonReadTimer.start();
   downButtonReadTimer.start();
   toggleCoolTimer.start();
+  toggleHeatTimer.start();
   pulsateLedTimer.start();
   updateInfoTimer.start();
 
   RGB.control(true);
+  RGB.color(0,255,0);
 }
 
 void loop() {
@@ -84,17 +96,16 @@ void loop() {
 
 void updateInfo() {
   info = String::format(
-    "{\"fanState\":\"%s\",\"coolState\":\"%s\",\"coolLastOn\":%d,\"temperature\":%d,\"targetTemperature\":%d}",
+    "{ \"mode\": \"%s\", \"fanState\": %s, \"coolState\": %s, \"heatState\": %s, \"heatLastOn\": %d, \"coolLastOn\": %d, \"temperature\": %d, \"targetTemperature\": %d }",
+    (mode == OFF ? "off" : (mode == COOL ? "cool" : "heat")),
     (fanState ? "true" : "false"),
     (coolState ? "true" : "false"),
+    (heatState ? "true" : "false"),
+    heatLastOn,
     coolLastOn,
     temperature,
     targetTemperature
   );
-/* coolState=false; */
-/* coolLastOn=0; */
-/* temperature=0; */
-/* targetTemperature=72; */
 }
 
 void pulsateLed() {
@@ -116,11 +127,39 @@ void pulsateLed() {
 }
 
 void displayTemperature() {
-  temperature = round(Thermistor.getTempF(true));
+  preciseTemperature = Thermistor.getTempF(true);
+  temperature = round(preciseTemperature);
   if ((Time.now() - targetTempLastChanged) >= 6) {
     Soda.write((int) round(temperature) % 10);
     Soda.write(' ');
   }
+}
+
+int setMode(String requestedMode) {
+  if (requestedMode == "off") {
+    mode = OFF;
+    toggleCoolTimer.stop();
+    toggleHeatTimer.stop();
+    stopHeat();
+    stopCool();
+    RGB.color(100,100,100);
+  }
+
+  if (requestedMode == "cool") {
+    mode = COOL;
+    toggleHeatTimer.stop();
+    toggleCoolTimer.start();
+    stopHeat();
+  }
+
+  if (requestedMode == "heat") {
+    mode = HEAT;
+    toggleCoolTimer.stop();
+    toggleHeatTimer.start();
+    stopCool();
+  }
+
+  return 0;
 }
 
 int setTargetTemp(String temp) {
@@ -133,26 +172,22 @@ int setTargetTemp(String temp) {
 
 void fanSwitchRead() {
   fanState = (bool) digitalRead(fanSwitch);
-  if(!coolState) {
+  if(!coolState && !heatState) {
     digitalWrite(fanRelay, fanState);
   }
 }
 
 void upButtonRead() {
-  upButtonState = digitalRead(upButton);
-
-  if (upButtonState == HIGH) {
+  if (digitalRead(upButton) == HIGH) {
     setTargetTemp(String(targetTemperature + 1));
-    delay(500);
+    delay(250);
   }
 }
 
 void downButtonRead() {
-  downButtonState = digitalRead(downButton);
-
-  if (downButtonState == HIGH) {
+  if (digitalRead(downButton) == HIGH) {
     setTargetTemp(String(targetTemperature - 1));
-    delay(500);
+    delay(250);
   }
 }
 
@@ -169,15 +204,41 @@ void toggleCool() {
         RGB.color(255,255,0);
       }
     }
-  } else {
-    if (coolState) {
-      RGB.color(0,255,0);
-      coolLastOn = Time.now();
-      coolState = false;
-      if (!digitalRead(fanSwitch)) {
-        digitalWrite(fanRelay, coolState);
-      }
-      digitalWrite(coolRelay, coolState);
-    }
+  } else if (coolState) stopCool();
+}
+
+void stopCool() {
+  RGB.color(0,255,0);
+  coolLastOn = Time.now();
+  coolState = false;
+  if (!digitalRead(fanSwitch)) {
+    digitalWrite(fanRelay, coolState);
   }
+  digitalWrite(coolRelay, coolState);
+}
+
+void toggleHeat() {
+  if (targetTemperature >= temperature) {
+    if (Time.now() - heatLastOn > 18) { // TODO: FIXME to 180
+      RGB.color(255,0,0);
+      heatLastOn = Time.now();
+      heatState = true;
+      digitalWrite(fanRelay, heatState);
+      digitalWrite(heatRelay, heatState);
+    } else {
+      if (!heatState) {
+        RGB.color(255,255,0);
+      }
+    }
+  } else if (heatState) stopHeat();
+}
+
+void stopHeat() {
+  RGB.color(0,255,0);
+  heatLastOn = Time.now();
+  heatState = false;
+  if (!digitalRead(fanSwitch)) {
+    digitalWrite(fanRelay, heatState);
+  }
+  digitalWrite(heatRelay, heatState);
 }
