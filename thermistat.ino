@@ -6,8 +6,6 @@
 #define COOL 1
 #define HEAT 2
 
-// TODO: Use EEPROM.put/get for targetTemp
-
 Soda Soda;
 
 int thermPin = A4; // Analog pin the thermistor is connected to
@@ -74,6 +72,18 @@ void setup() {
   Particle.function("setMode", setMode);
   Particle.function("targetTemp", setTargetTemp);
 
+  EEPROM.get(10, coolLastOn);
+  EEPROM.get(15, heatLastOn);
+  EEPROM.get(20, mode);
+  EEPROM.get(30, targetTemperature);
+  if (coolLastOn == 0xFFFF) coolLastOn = Time.now();
+  if (heatLastOn == 0xFFFF) heatLastOn = Time.now();
+  if (mode == 0xFFFF) mode = OFF;
+  if (targetTemperature == 0xFFFF) targetTemperature = 72;
+
+  RGB.control(true);
+  RGB.color(0, 255, 0);
+
   //        a   b   c   d   e   f   g   .
   Soda.pins(D3, D2, A3, A5, A6, D5, D6, A2);
 
@@ -82,13 +92,12 @@ void setup() {
   fanSwitchReadTimer.start();
   upButtonReadTimer.start();
   downButtonReadTimer.start();
-  toggleCoolTimer.start();
-  toggleHeatTimer.start();
+  if (mode == COOL) toggleCoolTimer.start();
+  if (mode == HEAT) toggleHeatTimer.start();
+  if (mode == OFF) RGB.color(100, 100, 100);
   pulsateLedTimer.start();
   updateInfoTimer.start();
 
-  RGB.control(true);
-  RGB.color(0,255,0);
 }
 
 void loop() {
@@ -159,12 +168,15 @@ int setMode(String requestedMode) {
     stopCool();
   }
 
+  EEPROM.put(20, mode);
   return 0;
 }
 
 int setTargetTemp(String temp) {
   targetTempLastChanged = Time.now();
   targetTemperature = temp.toInt();
+  EEPROM.put(10, targetTempLastChanged);
+  EEPROM.put(30, targetTemperature);
   Soda.write((int) round(targetTemperature) % 10);
   Soda.write('.');
   return targetTemperature;
@@ -196,6 +208,7 @@ void toggleCool() {
     if (Time.now() - coolLastOn > 18) { // TODO: FIXME to 180
       RGB.color(0,0,255);
       coolLastOn = Time.now();
+      EEPROM.put(10, coolLastOn);
       coolState = true;
       digitalWrite(fanRelay, coolState);
       digitalWrite(coolRelay, coolState);
@@ -210,6 +223,7 @@ void toggleCool() {
 void stopCool() {
   RGB.color(0,255,0);
   coolLastOn = Time.now();
+  EEPROM.put(10, coolLastOn);
   coolState = false;
   if (!digitalRead(fanSwitch)) {
     digitalWrite(fanRelay, coolState);
@@ -222,6 +236,7 @@ void toggleHeat() {
     if (Time.now() - heatLastOn > 18) { // TODO: FIXME to 180
       RGB.color(255,0,0);
       heatLastOn = Time.now();
+      EEPROM.put(15, heatLastOn);
       heatState = true;
       digitalWrite(fanRelay, heatState);
       digitalWrite(heatRelay, heatState);
@@ -236,6 +251,7 @@ void toggleHeat() {
 void stopHeat() {
   RGB.color(0,255,0);
   heatLastOn = Time.now();
+  EEPROM.put(15, heatLastOn);
   heatState = false;
   if (!digitalRead(fanSwitch)) {
     digitalWrite(fanRelay, heatState);
