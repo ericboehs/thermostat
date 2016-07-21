@@ -38,6 +38,7 @@ int heatLastOn = 0;
 int coolLastOn = 0;
 int temperature = 0;
 int targetTemperature = 72;
+int rawTemperature = 0;
 double preciseTemperature = 0.0;
 String info;
 
@@ -59,6 +60,11 @@ void setup() {
   pinMode(fanRelay, OUTPUT);
   pinMode(coolRelay, OUTPUT);
   pinMode(heatRelay, OUTPUT);
+
+  // Transitioning from high to low will turn the relay on; start high to keep them off
+  digitalWrite(fanRelay, true);
+  digitalWrite(coolRelay, true);
+  digitalWrite(heatRelay, true);
 
   Particle.variable("info", &info, STRING);
   Particle.variable("mode", mode);
@@ -105,13 +111,16 @@ void loop() {
 
 void updateInfo() {
   info = String::format(
-    "{ \"mode\": \"%s\", \"fanState\": %s, \"coolState\": %s, \"heatState\": %s, \"heatLastOn\": %d, \"coolLastOn\": %d, \"temperature\": %d, \"targetTemperature\": %d }",
+    "{ \"mode\": \"%s\", \"heatWait\": %d, \"coolWait\": %d, \"fanState\": %s, \"coolState\": %s, \"heatState\": %s, \"heatLastOn\": %d, \"coolLastOn\": %d, \"rawTemperature\": %d, \"temperature\": %d, \"targetTemperature\": %d }",
     (mode == OFF ? "off" : (mode == COOL ? "cool" : "heat")),
+    (targetTemperature > temperature && Time.now() - heatLastOn < 60 ? 60 - (Time.now() - heatLastOn) : 0),
+    (targetTemperature < temperature && Time.now() - coolLastOn < 300 ? 300 - (Time.now() - coolLastOn) : 0),
     (fanState ? "true" : "false"),
     (coolState ? "true" : "false"),
     (heatState ? "true" : "false"),
     heatLastOn,
     coolLastOn,
+    rawTemperature,
     temperature,
     targetTemperature
   );
@@ -136,6 +145,7 @@ void pulsateLed() {
 }
 
 void displayTemperature() {
+  rawTemperature = Thermistor.getTempRaw(true);
   preciseTemperature = Thermistor.getTempF(true);
   temperature = round(preciseTemperature);
   if ((Time.now() - targetTempLastChanged) >= 6) {
@@ -173,8 +183,12 @@ int setMode(String requestedMode) {
 }
 
 int setTargetTemp(String temp) {
+  int requestedTemp = temp.toInt();
+  if (requestedTemp < 60 || requestedTemp > 80)  {
+    return 1;
+  }
+  targetTemperature = requestedTemp;
   targetTempLastChanged = Time.now();
-  targetTemperature = temp.toInt();
   EEPROM.put(10, targetTempLastChanged);
   EEPROM.put(30, targetTemperature);
   Soda.write((int) round(targetTemperature) % 10);
@@ -185,39 +199,62 @@ int setTargetTemp(String temp) {
 void fanSwitchRead() {
   fanState = (bool) digitalRead(fanSwitch);
   if(!coolState && !heatState) {
-    digitalWrite(fanRelay, fanState);
+    digitalWrite(fanRelay, !fanState);
   }
 }
 
 void upButtonRead() {
   if (digitalRead(upButton) == HIGH) {
-    setTargetTemp(String(targetTemperature + 1));
+    Soda.write((int) round(targetTemperature) % 10);
+    Soda.write('.');
+
     delay(250);
+
+    if ((Time.now() - targetTempLastChanged) >= 6){
+      targetTempLastChanged = Time.now();
+      return;
+    }
+
+    setTargetTemp(String(targetTemperature + 1));
   }
 }
 
 void downButtonRead() {
   if (digitalRead(downButton) == HIGH) {
-    setTargetTemp(String(targetTemperature - 1));
+
+    Soda.write((int) round(targetTemperature) % 10);
+    Soda.write('.');
+
     delay(250);
+
+    if ((Time.now() - targetTempLastChanged) >= 6){
+      targetTempLastChanged = Time.now();
+      return;
+    }
+
+    setTargetTemp(String(targetTemperature - 1));
   }
 }
 
 void toggleCool() {
-  if (targetTemperature <= temperature) {
-    if (Time.now() - coolLastOn > 18) { // TODO: FIXME to 180
+  if (targetTemperature < temperature) {
+    if (Time.now() - coolLastOn > 300) {
       RGB.color(0,0,255);
       coolLastOn = Time.now();
       EEPROM.put(10, coolLastOn);
       coolState = true;
-      digitalWrite(fanRelay, coolState);
-      digitalWrite(coolRelay, coolState);
+      digitalWrite(fanRelay, !coolState);
+      digitalWrite(coolRelay, !coolState);
+      Particle.publish("thermostat-on");
     } else {
       if (!coolState) {
         RGB.color(255,255,0);
       }
     }
-  } else if (coolState) stopCool();
+  }
+  if (targetTemperature > temperature && coolState &&
+      (Time.now() - coolLastOn > 300 || Time.now() - targetTempLastChanged < 30))
+    stopCool();
 }
 
 void stopCool() {
@@ -226,26 +263,31 @@ void stopCool() {
   EEPROM.put(10, coolLastOn);
   coolState = false;
   if (!digitalRead(fanSwitch)) {
-    digitalWrite(fanRelay, coolState);
+    digitalWrite(fanRelay, !coolState);
   }
-  digitalWrite(coolRelay, coolState);
+  digitalWrite(coolRelay, !coolState);
+  Particle.publish("thermostat-off");
 }
 
 void toggleHeat() {
-  if (targetTemperature >= temperature) {
-    if (Time.now() - heatLastOn > 18) { // TODO: FIXME to 180
+  if (targetTemperature > temperature) {
+    if (Time.now() - heatLastOn > 60) {
       RGB.color(255,0,0);
       heatLastOn = Time.now();
       EEPROM.put(15, heatLastOn);
       heatState = true;
-      digitalWrite(fanRelay, heatState);
-      digitalWrite(heatRelay, heatState);
+      digitalWrite(fanRelay, !heatState);
+      digitalWrite(heatRelay, !heatState);
+      Particle.publish("thermostat-on");
     } else {
       if (!heatState) {
         RGB.color(255,255,0);
       }
     }
-  } else if (heatState) stopHeat();
+  }
+  if (targetTemperature > temperature && heatState &&
+       (Time.now() - heatLastOn > 300 || Time.now() - targetTempLastChanged < 30))
+    stopHeat();
 }
 
 void stopHeat() {
@@ -254,7 +296,8 @@ void stopHeat() {
   EEPROM.put(15, heatLastOn);
   heatState = false;
   if (!digitalRead(fanSwitch)) {
-    digitalWrite(fanRelay, heatState);
+    digitalWrite(fanRelay, !heatState);
   }
-  digitalWrite(heatRelay, heatState);
+  digitalWrite(heatRelay, !heatState);
+  Particle.publish("thermostat-off");
 }

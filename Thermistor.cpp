@@ -35,7 +35,7 @@ int Thermistor::getTempRaw(bool smooth=false) {
 float Thermistor::getTempK(bool smooth=false) {
     _temp_raw = getTempRaw(smooth);
 
-    _temp_k = log(((40960000/_temp_raw) - _resistor));
+    _temp_k = log((((4096 / 2) * 10000 / _temp_raw) + _resistor));
     _temp_k = 1 / (0.001129148 + (0.000234125 + (0.0000000876741 * _temp_k * _temp_k ))* _temp_k);
 
     return _temp_k;
