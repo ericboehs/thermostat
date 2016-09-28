@@ -159,7 +159,10 @@ int setMode(String requestedMode) {
     mode = OFF;
     toggleCoolTimer.stop();
     toggleHeatTimer.stop();
-    stopHeat();
+    if (heatState)
+      stopHeat();
+    if (coolState)
+      stopCool();
     stopCool();
     RGB.color(100,100,100);
   }
@@ -168,14 +171,16 @@ int setMode(String requestedMode) {
     mode = COOL;
     toggleHeatTimer.stop();
     toggleCoolTimer.start();
-    stopHeat();
+    if (heatState)
+      stopHeat();
   }
 
   if (requestedMode == "heat") {
     mode = HEAT;
     toggleCoolTimer.stop();
     toggleHeatTimer.start();
-    stopCool();
+    if (coolState)
+      stopCool();
   }
 
   EEPROM.put(20, mode);
@@ -285,8 +290,8 @@ void toggleHeat() {
       }
     }
   }
-  if (targetTemperature > temperature && heatState &&
-       (Time.now() - heatLastOn > 300 || Time.now() - targetTempLastChanged < 30))
+  if (targetTemperature < temperature && heatState &&
+       (Time.now() - heatLastOn > 60 || Time.now() - targetTempLastChanged < 30))
     stopHeat();
 }
 
